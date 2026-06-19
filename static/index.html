@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portföy Takip & Yapay Zeka Raporlama Paneli</title>
+    <!-- Google Fonts: Outfit & Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Premium Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Chart.js for beautiful charts -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Marked.js to parse AI Markdown reports in browser -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- Custom styling stylesheet -->
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <!-- Background glowing gradients -->
+    <div class="bg-glow bg-glow-1"></div>
+    <div class="bg-glow bg-glow-2"></div>
+    <div class="bg-glow bg-glow-3"></div>
+
+    <div class="container">
+        <!-- HEADER -->
+        <header class="app-header">
+            <div class="logo-area">
+                <i class="fa-solid fa-chart-line-up logo-icon"></i>
+                <div>
+                    <h1>Inwest</h1>
+                    <p class="subtitle">BIST & Kripto Portföy Takip ve AI Analiz Motoru</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <div class="usd-badge glass-card">
+                    <span class="usd-label">USD/TRY</span>
+                    <span id="usd-rate-value" class="usd-value">0.00</span>
+                </div>
+                <button id="btn-generate-report" class="btn btn-primary btn-glow">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i>
+                    <span>AI Raporu Üret</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- PORTFOLIO OVERVIEW STATS -->
+        <section class="stats-grid">
+            <div class="stat-card glass-card">
+                <div class="stat-icon-wrapper val-icon">
+                    <i class="fa-solid fa-wallet"></i>
+                </div>
+                <div class="stat-info">
+                    <span class="stat-label">Toplam Portföy Değeri</span>
+                    <h2 id="stat-total-value">0.00 TL</h2>
+                    <span id="stat-daily-change" class="stat-trend change-neutral">
+                        <i class="fa-solid fa-minus"></i> 0.00% (Bugün)
+                    </span>
+                </div>
+            </div>
+
+            <div class="stat-card glass-card">
+                <div class="stat-icon-wrapper cost-icon">
+                    <i class="fa-solid fa-coins"></i>
+                </div>
+                <div class="stat-info">
+                    <span class="stat-label">Toplam Yatırım Maliyeti</span>
+                    <h2 id="stat-total-cost">0.00 TL</h2>
+                    <span class="stat-trend-sub">Tüm Alış İşlemleri</span>
+                </div>
+            </div>
+
+            <div class="stat-card glass-card">
+                <div class="stat-icon-wrapper profit-icon" id="profit-icon-box">
+                    <i class="fa-solid fa-arrow-trend-up"></i>
+                </div>
+                <div class="stat-info">
+                    <span class="stat-label">Net Kâr / Zarar</span>
+                    <h2 id="stat-net-profit">0.00 TL</h2>
+                    <span id="stat-profit-percent" class="stat-trend change-neutral">
+                        0.00%
+                    </span>
+                </div>
+            </div>
+        </section>
+
+        <!-- MAIN CONTENT LAYOUT -->
+        <main class="dashboard-layout">
+            
+            <!-- LEFT COLUMN (CHARTS, HOLDINGS, TX FORM) -->
+            <div class="dashboard-left">
+                <!-- CHART CARD -->
+                <div class="glass-card chart-container">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-chart-area"></i> Gelişim Grafiği</h3>
+                        <span class="card-subtitle">Portföy Değerinin Zaman İçindeki Değişimi</span>
+                    </div>
+                    <div class="chart-wrapper">
+                        <canvas id="historyChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- HOLDINGS TABLE CARD -->
+                <div class="glass-card table-container">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-list-check"></i> Varlık Dağılımı</h3>
+                        <span class="card-subtitle">Mevcut Pozisyonlarınızın Güncel Durumu</span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="holdings-table">
+                            <thead>
+                                <tr>
+                                    <th>Sembol</th>
+                                    <th>Sınıf</th>
+                                    <th>Miktar</th>
+                                    <th>Ort. Maliyet</th>
+                                    <th>Güncel Fiyat</th>
+                                    <th>Maliyet (TL)</th>
+                                    <th>Değer (TL)</th>
+                                    <th>Kâr / Zarar</th>
+                                </tr>
+                            </thead>
+                            <tbody id="holdings-list">
+                                <!-- Populated dynamically by app.js -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- TRANSACTION LOGGER FORM -->
+                <div class="glass-card transaction-container">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-rotate"></i> Yeni İşlem Ekle</h3>
+                        <span class="card-subtitle">Portföye Alım/Satım Kaydı Girin</span>
+                    </div>
+                    <form id="transaction-form" class="tx-form">
+                        <div class="form-group" style="position: relative;">
+                            <label for="tx-symbol">Sembol</label>
+                            <input type="text" id="tx-symbol" placeholder="Örn: FROTO.IS, THYAO.IS, BTC-USD" required autocomplete="off">
+                            <div id="autocomplete-suggestions" class="suggestions-list" style="display: none;"></div>
+                        </div>
+                        <div class="form-group">
+                            <label for="tx-asset-class">Varlık Sınıfı</label>
+                            <select id="tx-asset-class" required>
+                                <option value="BIST">BIST Hisse (.IS)</option>
+                                <option value="US_Stocks">ABD Hisse Senedi</option>
+                                <option value="Crypto">Kripto Para (-USD)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="tx-type">İşlem Tipi</label>
+                            <select id="tx-type" required>
+                                <option value="BUY">AL (Buy)</option>
+                                <option value="SELL">SAT (Sell)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="tx-amount">Miktar</label>
+                            <input type="number" step="any" id="tx-amount" placeholder="0.00" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="tx-price">Birim Fiyat (Orijinal Para)</label>
+                            <input type="number" step="any" id="tx-price" placeholder="0.00" required>
+                        </div>
+                        <div class="form-group form-submit">
+                            <button type="submit" class="btn btn-secondary btn-full">
+                                <i class="fa-solid fa-plus-circle"></i> İşlemi Kaydet
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- TRANSACTION HISTORY CARD -->
+                <div class="glass-card history-table-container">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-clock-rotate-left"></i> İşlem Geçmişi</h3>
+                        <span class="card-subtitle">Kaydedilen Son Alım/Satım Hareketleri</span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="holdings-table">
+                            <thead>
+                                <tr>
+                                    <th>Tarih</th>
+                                    <th>Sembol</th>
+                                    <th>Tip</th>
+                                    <th>Miktar</th>
+                                    <th>Fiyat</th>
+                                    <th>Aksiyon</th>
+                                </tr>
+                            </thead>
+                            <tbody id="transactions-list">
+                                <!-- Populated dynamically by app.js -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIGHT COLUMN (AI REPORT & NEWS) -->
+            <div class="dashboard-right">
+                <!-- AI REPORT DISPLAY CARD -->
+                <div class="glass-card report-container-card">
+                    <div class="card-header">
+                        <div class="report-header-title">
+                            <h3><i class="fa-solid fa-brain-circuit"></i> Günlük Analist Yorumu</h3>
+                            <span class="badge badge-ai-mode">AI Powered</span>
+                        </div>
+                        <span class="card-subtitle" id="report-date-badge">Son Rapor: Yükleniyor...</span>
+                    </div>
+                    <div id="ai-report-body" class="report-body markdown-content">
+                        <!-- AI report markdown converted to HTML here -->
+                        <div class="report-loading">
+                            <i class="fa-solid fa-spinner fa-spin"></i> Rapor yükleniyor...
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI CONFIGURATION CARD -->
+                <div class="glass-card config-container-card" style="margin-bottom: 0px;">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-gears"></i> Yapay Zeka Yapılandırması</h3>
+                        <span class="card-subtitle">Canlı raporlar için Gemini API Anahtarı tanımlayın</span>
+                    </div>
+                    <div class="config-body" style="display: flex; flex-direction: column; gap: 10px;">
+                        <div class="form-group" style="display: flex; flex-direction: column; gap: 6px;">
+                            <label for="settings-api-key" style="font-size: 0.8rem; color: var(--text-secondary);">Gemini API Anahtarı (API Key)</label>
+                            <div class="input-with-button" style="display: flex; gap: 8px;">
+                                <input type="password" id="settings-api-key" placeholder="Anahtar yok (Simülasyon Aktif)" style="flex: 1; background: hsla(217, 30%, 12%, 0.8); border: 1px solid var(--card-border); border-radius: 8px; padding: 0.6rem 0.8rem; color: var(--text-primary); outline: none;">
+                                <button id="btn-save-api-key" class="btn btn-secondary" style="padding: 0.6rem 1.2rem; font-size: 0.85rem;">Kaydet</button>
+                            </div>
+                            <span class="card-subtitle" style="margin-top: 4px; display: block; font-size: 0.75rem; color: var(--text-muted); line-height: 1.4;">
+                                * Anahtarınız yerel <code>.env</code> dosyasına kaydedilir. Ücretsiz bir anahtar almak için 
+                                <a href="https://aistudio.google.com/" target="_blank" style="color: var(--secondary); text-decoration: none;">Google AI Studio</a>'yu ziyaret edebilirsiniz.
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ECONOMIC CALENDAR CARD -->
+                <div class="glass-card calendar-container-card">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-calendar-days"></i> Ekonomik Takvim (2026)</h3>
+                        <span class="card-subtitle">Kritik Makroekonomik Açıklamalar</span>
+                    </div>
+                    <div class="calendar-list" id="calendar-list">
+                        <!-- Populated dynamically by app.js -->
+                    </div>
+                </div>
+
+                <!-- PORTFOLIO NEWS CARD -->
+                <div class="glass-card news-container-card">
+                    <div class="card-header">
+                        <h3><i class="fa-solid fa-newspaper"></i> Portföy Haber Akışı</h3>
+                        <span class="card-subtitle">Varlıklarınızla İlgili Önemli Başlıklar</span>
+                    </div>
+                    <div class="news-list" id="news-list">
+                        <!-- Populated dynamically by app.js -->
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast">
+        <i class="fa-solid fa-info-circle toast-icon"></i>
+        <span id="toast-message">Bildirim Mesajı</span>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
