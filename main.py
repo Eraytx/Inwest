@@ -25,6 +25,13 @@ app = FastAPI(
 
 @app.on_event("startup")
 def startup_event():
+    # Initialize the database
+    try:
+        database.init_db()
+        print("Database initialized successfully.")
+    except Exception as e:
+        print(f"Database initialization failed: {e}")
+
     # Start the background task scheduler
     app.state.scheduler = scheduler.start_scheduler()
 

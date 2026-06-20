@@ -303,5 +303,3 @@ def recalculate_assets():
         raise e
     finally:
         conn.close()
-
-init_db()
