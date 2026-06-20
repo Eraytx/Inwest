@@ -29,7 +29,6 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing API Token")
 
-    # Expected format: "Bearer <uuid>"
     token = authorization.replace("Bearer ", "").strip()
     user = database.get_user_by_token(token)
 
@@ -102,7 +101,7 @@ def login(user_data: UserLogin):
 def get_dashboard_summary(user=Depends(get_current_user)):
     user_id = user["id"]
     try:
-        metrics = engine.calculate_portfolio(user_id) # Engine updated to accept user_id
+        metrics = engine.calculate_portfolio(user_id)
     except Exception as e:
         metrics = {
             "date": "",
@@ -154,6 +153,22 @@ def delete_transaction(id: int, user=Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/reports/generate")
+def trigger_report_generation(user=Depends(get_current_user)):
+    """
+    Triggers the generation of an AI report for the specific user.
+    """
+    try:
+        report_text = report_generator.generate_ai_report(user["id"], "daily")
+        return {"status": "success", "report": report_text}
+    except Exception as e:
+        print(f"Report generation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate report: {e}")
+
+@app.get("/api/reports")
+def get_historical_reports(limit: int = 20, user=Depends(get_current_user)):
+    return database.get_latest_reports(user["id"], limit=limit)
+
 # --- Common Services (Global) ---
 
 @app.get("/api/search")
@@ -173,8 +188,6 @@ def get_settings():
 
 @app.post("/api/settings")
 def save_settings(settings: SettingsUpdate, user=Depends(get_current_user)):
-    # Note: Currently updating global .env (common for all users)
-    # In a real app, API Keys should be stored per user in the database.
     return {"status": "success"}
 
 if __name__ == "__main__":
