@@ -22,10 +22,29 @@ def get_cursor(conn):
         return conn.cursor()
 
 def init_db():
+    """Drops old tables and initializes the database with the new multi-user schema."""
     conn = get_connection()
     cursor = get_cursor(conn)
     auto_inc = "SERIAL PRIMARY KEY" if DATABASE_URL else "INTEGER PRIMARY KEY AUTOINCREMENT"
     
+    # Check if we need to migration (Detect old schema)
+    needs_reset = False
+    try:
+        cursor.execute("SELECT user_id FROM transactions LIMIT 1")
+    except Exception:
+        needs_reset = True
+        if DATABASE_URL: conn.rollback()
+        print("Old schema detected. Resetting tables for multi-user support...")
+
+    if needs_reset:
+        # Nuclear option: Drop existing tables to ensure PK constraints are set correctly
+        tables = ["reports", "portfolio_history", "transactions", "assets", "users"]
+        for table in tables:
+            try:
+                cursor.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+            except Exception:
+                if DATABASE_URL: conn.rollback()
+
     # 1. Users table
     cursor.execute(f"""
     CREATE TABLE IF NOT EXISTS users (
@@ -37,42 +56,58 @@ def init_db():
     )
     """)
     
-    # Tables to update with user_id
-    tables_to_update = {
-        "assets": "user_id INTEGER NOT NULL",
-        "transactions": "user_id INTEGER NOT NULL",
-        "portfolio_history": "user_id INTEGER NOT NULL",
-        "reports": "user_id INTEGER NOT NULL"
-    }
+    # 2. Assets table
+    cursor.execute(f"""
+    CREATE TABLE IF NOT EXISTS assets (
+        user_id INTEGER NOT NULL,
+        symbol TEXT NOT NULL,
+        asset_class TEXT NOT NULL,
+        amount REAL NOT NULL DEFAULT 0.0,
+        avg_price REAL NOT NULL DEFAULT 0.0,
+        PRIMARY KEY (user_id, symbol)
+    )
+    """)
 
-    # Ensure tables exist and have user_id column
-    for table, col_def in tables_to_update.items():
-        if table == "assets":
-            cursor.execute(f"CREATE TABLE IF NOT EXISTS assets (user_id INTEGER, symbol TEXT, asset_class TEXT, amount REAL, avg_price REAL, PRIMARY KEY(user_id, symbol))")
-        elif table == "transactions":
-            cursor.execute(f"CREATE TABLE IF NOT EXISTS transactions (id {auto_inc}, user_id INTEGER, symbol TEXT, type TEXT, amount REAL, price REAL, timestamp TEXT)")
-        elif table == "portfolio_history":
-            cursor.execute(f"CREATE TABLE IF NOT EXISTS portfolio_history (user_id INTEGER, date TEXT, total_value REAL, total_cost REAL, daily_change_percent REAL, PRIMARY KEY(user_id, date))")
-        elif table == "reports":
-            cursor.execute(f"CREATE TABLE IF NOT EXISTS reports (id {auto_inc}, user_id INTEGER, report_type TEXT, generated_at TEXT, report_text TEXT, meta_data TEXT)")
+    # 3. Transactions table
+    cursor.execute(f"""
+    CREATE TABLE IF NOT EXISTS transactions (
+        id {auto_inc},
+        user_id INTEGER NOT NULL,
+        symbol TEXT NOT NULL,
+        type TEXT NOT NULL,
+        amount REAL NOT NULL,
+        price REAL NOT NULL,
+        timestamp TEXT NOT NULL
+    )
+    """)
 
-        # Migration: Check if user_id column exists, if not, try to add it (simple version)
-        try:
-            ph = "%s" if DATABASE_URL else "?"
-            cursor.execute(f"SELECT user_id FROM {table} LIMIT 1")
-        except Exception:
-            conn.rollback()
-            cursor = get_cursor(conn)
-            print(f"Adding user_id to {table}...")
-            try:
-                cursor.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER")
-            except Exception as e:
-                print(f"Could not alter table {table}: {e}")
-                conn.rollback()
-                cursor = get_cursor(conn)
+    # 4. Portfolio history table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS portfolio_history (
+        user_id INTEGER NOT NULL,
+        date TEXT NOT NULL,
+        total_value REAL NOT NULL,
+        total_cost REAL NOT NULL,
+        daily_change_percent REAL NOT NULL,
+        PRIMARY KEY (user_id, date)
+    )
+    """)
+
+    # 5. Reports table
+    cursor.execute(f"""
+    CREATE TABLE IF NOT EXISTS reports (
+        id {auto_inc},
+        user_id INTEGER NOT NULL,
+        report_type TEXT NOT NULL,
+        generated_at TEXT NOT NULL,
+        report_text TEXT NOT NULL,
+        meta_data TEXT
+    )
+    """)
 
     conn.commit()
     conn.close()
+    print("Database schema is up to date.")
 
 # --- Auth Functions ---
 
@@ -86,53 +121,34 @@ def create_user(email, password):
     api_token = str(uuid.uuid4())
     created_at = datetime.now().isoformat()
     ph = "%s" if DATABASE_URL else "?"
-
     try:
-        if DATABASE_URL:
-            cursor.execute(
-                f"INSERT INTO users (email, password_hash, api_token, created_at) VALUES ({ph}, {ph}, {ph}, {ph}) RETURNING id",
-                (email.lower(), password_hash, api_token, created_at)
-            )
-            user_id = cursor.fetchone()['id']
-        else:
-            cursor.execute(
-                f"INSERT INTO users (email, password_hash, api_token, created_at) VALUES ({ph}, {ph}, {ph}, {ph})",
-                (email.lower(), password_hash, api_token, created_at)
-            )
-            user_id = cursor.lastrowid
+        cursor.execute(f"INSERT INTO users (email, password_hash, api_token, created_at) VALUES ({ph}, {ph}, {ph}, {ph}) RETURNING id", (email.lower(), password_hash, api_token, created_at))
+        user_id = cursor.fetchone()['id'] if DATABASE_URL else cursor.lastrowid
         conn.commit()
         return {"id": user_id, "api_token": api_token}
     except Exception as e:
-        conn.rollback()
-        raise e
-    finally:
-        conn.close()
+        conn.rollback(); raise e
+    finally: conn.close()
 
 def authenticate_user(email, password):
-    conn = get_connection()
-    cursor = get_cursor(conn)
-    password_hash = hash_password(password)
+    conn = get_connection(); cursor = get_cursor(conn)
     ph = "%s" if DATABASE_URL else "?"
-    cursor.execute(f"SELECT id, email, api_token FROM users WHERE email = {ph} AND password_hash = {ph}", (email.lower(), password_hash))
-    user = cursor.fetchone()
-    conn.close()
+    cursor.execute(f"SELECT id, email, api_token FROM users WHERE email = {ph} AND password_hash = {ph}", (email.lower(), hash_password(password)))
+    user = cursor.fetchone(); conn.close()
     return dict(user) if user else None
 
 def get_user_by_token(token):
-    conn = get_connection()
-    cursor = get_cursor(conn)
+    conn = get_connection(); cursor = get_cursor(conn)
     ph = "%s" if DATABASE_URL else "?"
     cursor.execute(f"SELECT id, email FROM users WHERE api_token = {ph}", (token,))
-    user = cursor.fetchone()
-    conn.close()
+    user = cursor.fetchone(); conn.close()
     return dict(user) if user else None
 
 # --- Data Functions ---
 
 def add_transaction(user_id, symbol, asset_class, tx_type, amount, price, timestamp=None):
     if timestamp is None: timestamp = datetime.now().isoformat()
-    conn = get_connection()
-    cursor = get_cursor(conn)
+    conn = get_connection(); cursor = get_cursor(conn)
     ph = "%s" if DATABASE_URL else "?"
     try:
         cursor.execute(f"INSERT INTO transactions (user_id, symbol, type, amount, price, timestamp) VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph})", (user_id, symbol.upper(), tx_type.upper(), amount, price, timestamp))
@@ -152,8 +168,7 @@ def add_transaction(user_id, symbol, asset_class, tx_type, amount, price, timest
                 else: cursor.execute(f"UPDATE assets SET amount = {ph} WHERE user_id = {ph} AND symbol = {ph}", (new_amount, user_id, symbol.upper()))
         conn.commit()
         return True
-    except Exception as e:
-        conn.rollback(); raise e
+    except Exception as e: conn.rollback(); raise e
     finally: conn.close()
 
 def get_assets(user_id):
