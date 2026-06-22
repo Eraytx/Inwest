@@ -2,6 +2,9 @@ import yfinance as yf
 from datetime import date
 import database
 
+# 1 Troy Ounce = 31.1034768 Grams
+OUNCE_TO_GRAM = 31.1034768
+
 PRECIOUS_METAL_SYMBOLS = {"XAUUSD=X", "XAGUSD=X", "GC=F", "SI=F"}
 
 
@@ -18,20 +21,34 @@ def get_usd_try_rate():
 
 def _resolve_currency(symbol, asset_class):
     ac = asset_class.upper()
+    # GOLD and SILVER assets are entered and tracked in TRY (Gram price)
+    if ac in ("GOLD", "SILVER"):
+        return "TRY"
     if ac == "BIST" or symbol.endswith(".IS"):
         return "TRY"
-    if ac in ("GOLD", "SILVER", "CRYPTO", "US_STOCKS"):
-        return "USD"
-    if symbol in PRECIOUS_METAL_SYMBOLS:
-        return "USD"
-    if symbol.endswith("-USD"):
-        return "USD"
     return "USD"
 
 
-def get_asset_price(symbol, asset_class):
+def get_asset_price(symbol, asset_class, usd_rate):
+    """
+    Fetches the current price for a symbol.
+    Returns: (price, currency)
+    """
     symbol = symbol.upper().strip()
+    ac = asset_class.upper()
+
     try:
+        # Special handling for Gold/Silver Gram calculation
+        if ac in ["GOLD", "SILVER"] or symbol in ["XAUUSD=X", "XAGUSD=X"]:
+            target_symbol = symbol if "=" in symbol else ("XAUUSD=X" if ac == "GOLD" else "XAGUSD=X")
+            ticker = yf.Ticker(target_symbol)
+            history = ticker.history(period="5d")
+            if not history.empty:
+                ounce_price_usd = float(history["Close"].iloc[-1])
+                # Convert Ounce USD -> Gram TRY
+                gram_price_try = (ounce_price_usd * usd_rate) / OUNCE_TO_GRAM
+                return gram_price_try, "TRY"
+
         ticker = yf.Ticker(symbol)
         history = ticker.history(period="5d")
         if not history.empty:
@@ -40,15 +57,16 @@ def get_asset_price(symbol, asset_class):
             return price, currency
     except Exception as e:
         print(f"Error fetching price for {symbol}: {e}")
+
     return None, None
 
 
 def _display_name(symbol, asset_class):
     ac = asset_class.upper()
     if ac == "GOLD" or symbol == "XAUUSD=X":
-        return "Altın"
+        return "Gram Altın"
     if ac == "SILVER" or symbol == "XAGUSD=X":
-        return "Gümüş"
+        return "Gram Gümüş"
     if symbol.endswith(".IS"):
         return symbol.replace(".IS", "")
     if symbol.endswith("-USD"):
@@ -68,23 +86,26 @@ def calculate_portfolio(user_id):
         asset_class = asset["asset_class"]
         amount = asset["amount"]
         avg_price = asset["avg_price"]
-        current_price, currency = get_asset_price(symbol, asset_class)
+
+        current_price, currency = get_asset_price(symbol, asset_class, usd_try)
+
         if current_price is None:
             current_price = avg_price
             currency = _resolve_currency(symbol, asset_class)
 
-        cost_orig = amount * avg_price
-        value_orig = amount * current_price
-
-        if currency == "USD":
-            cost_try = cost_orig * usd_try
-            value_try = value_orig * usd_try
+        # Cost and Value calculations
+        # GOLD and SILVER assets are already handled as Gram TRY in this logic
+        if currency == "TRY":
+            cost_try = amount * avg_price
+            value_try = amount * current_price
         else:
-            cost_try = cost_orig
-            value_try = value_orig
+            # USD Assets (US Stocks, Crypto) - entered in USD, shown in TRY
+            cost_try = (amount * avg_price) * usd_try
+            value_try = (amount * current_price) * usd_try
 
         profit_try = value_try - cost_try
         profit_percent = (profit_try / cost_try * 100.0) if cost_try > 0 else 0.0
+
         total_cost_try += cost_try
         total_value_try += value_try
 
