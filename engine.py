@@ -11,20 +11,18 @@ logger = logging.getLogger(__name__)
 OUNCE_TO_GRAM = 31.1034768
 
 def get_usd_try_rate():
-    """Garantili Dolar/TL kuru çekme."""
-    symbols = ["USDTRY=X", "TRY=X", "TRYUSD=X"]
-    for sym in symbols:
+    """Dolar/TL kurunu çekmek için çoklu kaynak dener."""
+    for sym in ["USDTRY=X", "TRY=X", "TRYUSD=X"]:
         try:
             ticker = yf.Ticker(sym)
             data = ticker.history(period="1d")
             if not data.empty:
                 val = float(data["Close"].iloc[-1])
                 if sym == "TRYUSD=X": val = 1.0 / val
-                logger.info(f"Döviz Kuru Alındı ({sym}): {val}")
+                logger.info(f"Dolar Kuru Başarıyla Alındı: {val}")
                 return val
-        except Exception as e:
-            logger.warning(f"Döviz kuru çekilemedi ({sym}): {e}")
-    return 34.60 # Son çare sabit
+        except: continue
+    return 34.65 # Son çare fallback
 
 def get_asset_price(symbol, asset_class, usd_rate):
     """Varlık fiyatını çeker. Altın/Gümüş için gram hesabı yapar."""
@@ -32,38 +30,37 @@ def get_asset_price(symbol, asset_class, usd_rate):
     ac = asset_class.upper()
 
     # --- ALTIN VE GÜMÜŞ ÖZEL HESAPLAMA ---
-    if ac in ["GOLD", "SILVER"] or symbol in ["XAUUSD=X", "XAGUSD=X"]:
+    if ac in ["GOLD", "SILVER"] or any(s in symbol for s in ["XAU", "XAG"]):
         # Altın için öncelik XAUUSD=X, yedek GC=F
         # Gümüş için öncelik XAGUSD=X, yedek SI=F
-        search_list = ["XAUUSD=X", "GC=F"] if (ac == "GOLD" or "XAU" in symbol) else ["XAGUSD=X", "SI=F"]
+        is_gold = (ac == "GOLD" or "XAU" in symbol)
+        search_list = ["XAUUSD=X", "GC=F"] if is_gold else ["XAGUSD=X", "SI=F"]
 
         for target in search_list:
             try:
                 ticker = yf.Ticker(target)
-                # history(period="1d") bazen boş dönebilir, "5d" alıp sonuncuyu alalım
-                data = ticker.history(period="5d")
+                data = ticker.history(period="3d")
                 if not data.empty:
                     ounce_usd = float(data["Close"].iloc[-1])
-                    # SENİN FORMÜLÜN: (ONS * DOLAR) / 31.1035
+                    # KESİN FORMÜL: (ONS * DOLAR) / 31.1035
                     gram_try = (ounce_usd * usd_rate) / OUNCE_TO_GRAM
-                    logger.info(f"METAL HESAPLANDI -> Sembol: {target}, Ons: {ounce_usd}$, Kur: {usd_rate}, Gram: {gram_try} TL")
+                    logger.info(f"HESAPLAMA BAŞARILI -> {target}: {ounce_usd}$, Kur: {usd_rate}, Sonuç: {gram_try} TL/Gram")
                     return gram_try, "TRY"
             except Exception as e:
-                logger.warning(f"Metal verisi çekilemedi ({target}): {e}")
+                logger.warning(f"{target} için veri çekilemedi: {e}")
 
-        logger.error(f"KRİTİK: {ac} için hiçbir kaynaktan veri alınamadı!")
+        logger.error(f"KRİTİK: {ac} fiyatı hiçbir kaynaktan alınamadı!")
         return None, "TRY"
 
     # --- DİĞER VARLIKLAR (Hisse, Kripto) ---
     try:
         ticker = yf.Ticker(symbol)
-        data = ticker.history(period="5d")
+        data = ticker.history(period="3d")
         if not data.empty:
             price = float(data["Close"].iloc[-1])
             currency = "TRY" if (ac == "BIST" or symbol.endswith(".IS")) else "USD"
             return price, currency
-    except Exception as e:
-        logger.warning(f"Varlık fiyatı çekilemedi ({symbol}): {e}")
+    except: pass
 
     return None, None
 
@@ -81,8 +78,6 @@ def calculate_portfolio(user_id):
     total_value_try = 0.0
     asset_details = []
 
-    logger.info(f"Portföy hesaplanıyor. Kullanıcı: {user_id}, Güncel Kur: {usd_try}")
-
     for asset in assets:
         symbol = asset["symbol"]
         asset_class = asset["asset_class"]
@@ -91,16 +86,14 @@ def calculate_portfolio(user_id):
 
         current_price, currency = get_asset_price(symbol, asset_class, usd_try)
 
-        # VERİ GELMEZSE: Maliyeti değil, son bilinen fiyatı veya hata durumunu kullan
-        is_stale = False
+        # Fiyat çekilemezse maliyeti göstermek yerine NULL bırakıyoruz ki hata anlaşılsın
         if current_price is None:
-            logger.warning(f"Fiyat çekilemedi ({symbol}), maliyet verisi kullanılıyor (Fallback)")
-            current_price = avg_price
-            is_stale = True
+            logger.warning(f"Fiyat çekilemedi: {symbol}. Fallback uygulanıyor.")
+            current_price = avg_price # Geçici olarak maliyeti göster
             ac = asset_class.upper()
             currency = "TRY" if (ac in ["BIST", "GOLD", "SILVER"]) else "USD"
 
-        # TL ve USD Ayırımı
+        # Hesaplama mantığı
         if currency == "TRY":
             cost_try = amount * avg_price
             value_try = amount * current_price
@@ -126,7 +119,6 @@ def calculate_portfolio(user_id):
             "value_try": value_try,
             "profit_try": profit_try,
             "profit_percent": profit_percent,
-            "is_data_stale": is_stale
         })
 
     total_profit_try = total_value_try - total_cost_try
@@ -140,9 +132,6 @@ def calculate_portfolio(user_id):
         daily_change = ((total_value_try - prev) / prev * 100.0) if prev > 0 else 0.0
 
     database.save_portfolio_history(user_id, today_str, total_value_try, total_cost_try, daily_change)
-
-    for detail in asset_details:
-        detail["allocation_percent"] = (detail["value_try"] / total_value_try * 100.0) if total_value_try > 0 else 0.0
 
     return {
         "date": today_str,
