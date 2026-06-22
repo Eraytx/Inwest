@@ -5,29 +5,21 @@ import database
 # 1 Troy Ounce = 31.1034768 Grams
 OUNCE_TO_GRAM = 31.1034768
 
-PRECIOUS_METAL_SYMBOLS = {"XAUUSD=X", "XAGUSD=X", "GC=F", "SI=F"}
-
-
 def get_usd_try_rate():
-    try:
-        ticker = yf.Ticker("USDTRY=X")
-        history = ticker.history(period="1d")
-        if not history.empty:
-            return float(history["Close"].iloc[-1])
-    except Exception as e:
-        print(f"Error fetching USD/TRY rate: {e}")
-    return 34.50
-
-
-def _resolve_currency(symbol, asset_class):
-    ac = asset_class.upper()
-    # GOLD and SILVER assets are entered and tracked in TRY (Gram price)
-    if ac in ("GOLD", "SILVER"):
-        return "TRY"
-    if ac == "BIST" or symbol.endswith(".IS"):
-        return "TRY"
-    return "USD"
-
+    """Fetches the latest USD/TRY exchange rate."""
+    for sym in ["USDTRY=X", "TRY=X"]:
+        try:
+            ticker = yf.Ticker(sym)
+            # Try fast_info first (most recent)
+            if hasattr(ticker, 'fast_info') and 'last_price' in ticker.fast_info:
+                return float(ticker.fast_info['last_price'])
+            # Fallback to history
+            history = ticker.history(period="1d")
+            if not history.empty:
+                return float(history["Close"].iloc[-1])
+        except Exception as e:
+            print(f"Error fetching USD/TRY rate from {sym}: {e}")
+    return 34.50 # Hard fallback
 
 def get_asset_price(symbol, asset_class, usd_rate):
     """
@@ -38,28 +30,52 @@ def get_asset_price(symbol, asset_class, usd_rate):
     ac = asset_class.upper()
 
     try:
-        # Special handling for Gold/Silver Gram calculation
+        # Special handling for Gold/Silver Gram calculation (TRY)
         if ac in ["GOLD", "SILVER"] or symbol in ["XAUUSD=X", "XAGUSD=X"]:
             target_symbol = symbol if "=" in symbol else ("XAUUSD=X" if ac == "GOLD" else "XAGUSD=X")
+
+            # Try to get the Ounce price in USD
             ticker = yf.Ticker(target_symbol)
-            history = ticker.history(period="5d")
-            if not history.empty:
-                ounce_price_usd = float(history["Close"].iloc[-1])
+            ounce_price_usd = None
+
+            if hasattr(ticker, 'fast_info') and 'last_price' in ticker.fast_info:
+                ounce_price_usd = float(ticker.fast_info['last_price'])
+
+            if ounce_price_usd is None:
+                history = ticker.history(period="5d")
+                if not history.empty:
+                    ounce_price_usd = float(history["Close"].iloc[-1])
+
+            if ounce_price_usd:
                 # Convert Ounce USD -> Gram TRY
                 gram_price_try = (ounce_price_usd * usd_rate) / OUNCE_TO_GRAM
+                print(f"Calculated Gram price for {target_symbol}: {gram_price_try} TL")
                 return gram_price_try, "TRY"
 
+        # Standard Assets (BIST, Crypto, US Stocks)
         ticker = yf.Ticker(symbol)
-        history = ticker.history(period="5d")
-        if not history.empty:
-            price = float(history["Close"].iloc[-1])
-            currency = _resolve_currency(symbol, asset_class)
-            return price, currency
+        current_price = None
+
+        if hasattr(ticker, 'fast_info') and 'last_price' in ticker.fast_info:
+            current_price = float(ticker.fast_info['last_price'])
+
+        if current_price is None:
+            history = ticker.history(period="5d")
+            if not history.empty:
+                current_price = float(history["Close"].iloc[-1])
+
+        if current_price:
+            # Resolve currency
+            if ac == "BIST" or symbol.endswith(".IS"):
+                currency = "TRY"
+            else:
+                currency = "USD"
+            return current_price, currency
+
     except Exception as e:
         print(f"Error fetching price for {symbol}: {e}")
 
     return None, None
-
 
 def _display_name(symbol, asset_class):
     ac = asset_class.upper()
@@ -72,7 +88,6 @@ def _display_name(symbol, asset_class):
     if symbol.endswith("-USD"):
         return symbol.replace("-USD", "")
     return symbol
-
 
 def calculate_portfolio(user_id):
     assets = database.get_assets(user_id)
@@ -91,15 +106,16 @@ def calculate_portfolio(user_id):
 
         if current_price is None:
             current_price = avg_price
-            currency = _resolve_currency(symbol, asset_class)
+            # Default currency resolution if fetch fails
+            ac = asset_class.upper()
+            currency = "TRY" if (ac in ["BIST", "GOLD", "SILVER"] or symbol.endswith(".IS")) else "USD"
 
         # Cost and Value calculations
-        # GOLD and SILVER assets are already handled as Gram TRY in this logic
         if currency == "TRY":
             cost_try = amount * avg_price
             value_try = amount * current_price
         else:
-            # USD Assets (US Stocks, Crypto) - entered in USD, shown in TRY
+            # USD Assets
             cost_try = (amount * avg_price) * usd_try
             value_try = (amount * current_price) * usd_try
 
