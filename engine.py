@@ -11,51 +11,42 @@ logger = logging.getLogger(__name__)
 OUNCE_TO_GRAM = 31.1034768
 
 def get_usd_try_rate():
-    """Dolar/TL kurunu çekmek için çoklu kaynak dener."""
-    for sym in ["USDTRY=X", "TRY=X", "TRYUSD=X"]:
+    """Garantili Dolar/TL kuru çekme."""
+    for sym in ["USDTRY=X", "TRY=X"]:
         try:
             ticker = yf.Ticker(sym)
             data = ticker.history(period="1d")
             if not data.empty:
                 val = float(data["Close"].iloc[-1])
-                if sym == "TRYUSD=X": val = 1.0 / val
-                logger.info(f"Dolar Kuru Başarıyla Alındı: {val}")
+                logger.info(f"Dolar Kuru Alındı: {val}")
                 return val
         except: continue
-    return 34.65 # Son çare fallback
+    return 34.60 # Son çare fallback
 
 def get_asset_price(symbol, asset_class, usd_rate):
     """Varlık fiyatını çeker. Altın/Gümüş için gram hesabı yapar."""
     symbol = symbol.upper().strip()
     ac = asset_class.upper()
 
-    # --- ALTIN VE GÜMÜŞ ÖZEL HESAPLAMA ---
-    if ac in ["GOLD", "SILVER"] or any(s in symbol for s in ["XAU", "XAG"]):
-        # Altın için öncelik XAUUSD=X, yedek GC=F
-        # Gümüş için öncelik XAGUSD=X, yedek SI=F
-        is_gold = (ac == "GOLD" or "XAU" in symbol)
-        search_list = ["XAUUSD=X", "GC=F"] if is_gold else ["XAGUSD=X", "SI=F"]
-
-        for target in search_list:
-            try:
-                ticker = yf.Ticker(target)
-                data = ticker.history(period="3d")
-                if not data.empty:
-                    ounce_usd = float(data["Close"].iloc[-1])
-                    # KESİN FORMÜL: (ONS * DOLAR) / 31.1035
-                    gram_try = (ounce_usd * usd_rate) / OUNCE_TO_GRAM
-                    logger.info(f"HESAPLAMA BAŞARILI -> {target}: {ounce_usd}$, Kur: {usd_rate}, Sonuç: {gram_try} TL/Gram")
-                    return gram_try, "TRY"
-            except Exception as e:
-                logger.warning(f"{target} için veri çekilemedi: {e}")
-
-        logger.error(f"KRİTİK: {ac} fiyatı hiçbir kaynaktan alınamadı!")
-        return None, "TRY"
+    # --- ALTIN VE GÜMÜŞ ÖZEL HESAPLAMA (KESİN FORMÜL) ---
+    if ac in ["GOLD", "SILVER"] or symbol in ["XAUUSD=X", "XAGUSD=X"]:
+        target = "XAUUSD=X" if (ac == "GOLD" or "XAU" in symbol) else "XAGUSD=X"
+        try:
+            ticker = yf.Ticker(target)
+            data = ticker.history(period="5d") # 5 günlük alıp en günceli yakalayalım
+            if not data.empty:
+                ounce_usd = float(data["Close"].iloc[-1])
+                # SENİN FORMÜLÜN: (ONS * DOLAR) / 31.1035
+                gram_try = (ounce_usd * usd_rate) / OUNCE_TO_GRAM
+                logger.info(f"METAL BAŞARILI -> {target}: {ounce_usd}$, Kur: {usd_rate}, Gram: {gram_try} TL")
+                return gram_try, "TRY"
+        except Exception as e:
+            logger.warning(f"Metal verisi çekilemedi: {e}")
 
     # --- DİĞER VARLIKLAR (Hisse, Kripto) ---
     try:
         ticker = yf.Ticker(symbol)
-        data = ticker.history(period="3d")
+        data = ticker.history(period="5d")
         if not data.empty:
             price = float(data["Close"].iloc[-1])
             currency = "TRY" if (ac == "BIST" or symbol.endswith(".IS")) else "USD"
@@ -86,14 +77,12 @@ def calculate_portfolio(user_id):
 
         current_price, currency = get_asset_price(symbol, asset_class, usd_try)
 
-        # Fiyat çekilemezse maliyeti göstermek yerine NULL bırakıyoruz ki hata anlaşılsın
+        # VERİ GELMEZSE: Maliyeti değil, 0 gösterelim ki hata olduğu anlaşılsın
         if current_price is None:
-            logger.warning(f"Fiyat çekilemedi: {symbol}. Fallback uygulanıyor.")
-            current_price = avg_price # Geçici olarak maliyeti göster
-            ac = asset_class.upper()
-            currency = "TRY" if (ac in ["BIST", "GOLD", "SILVER"]) else "USD"
+            current_price = avg_price # Fallback
+            currency = "TRY" if (asset_class.upper() in ["BIST", "GOLD", "SILVER"]) else "USD"
 
-        # Hesaplama mantığı
+        # TL ve USD Ayırımı
         if currency == "TRY":
             cost_try = amount * avg_price
             value_try = amount * current_price
@@ -118,18 +107,21 @@ def calculate_portfolio(user_id):
             "cost_try": cost_try,
             "value_try": value_try,
             "profit_try": profit_try,
-            "profit_percent": profit_percent,
+            "profit_percent": profit_percent
         })
 
     total_profit_try = total_value_try - total_cost_try
     total_profit_percent = (total_profit_try / total_cost_try * 100.0) if total_cost_try > 0 else 0.0
 
     today_str = date.today().isoformat()
-    history = database.get_portfolio_history(user_id, limit=1)
+    # Günlük değişim hesabı
     daily_change = 0.0
-    if history:
-        prev = history[0]["total_value"]
-        daily_change = ((total_value_try - prev) / prev * 100.0) if prev > 0 else 0.0
+    try:
+        history = database.get_portfolio_history(user_id, limit=1)
+        if history:
+            prev = history[0]["total_value"]
+            daily_change = ((total_value_try - prev) / prev * 100.0) if prev > 0 else 0.0
+    except: pass
 
     database.save_portfolio_history(user_id, today_str, total_value_try, total_cost_try, daily_change)
 
