@@ -115,7 +115,7 @@ def get_dashboard_summary(user=Depends(get_current_user)):
         }
         
     history = database.get_portfolio_history(user_id, limit=30)
-    reports = database.get_latest_reports(user_id, limit=5)
+    reports = database.get_latest_reports(user_id, limit=30)
     news = news_service.fetch_portfolio_news(metrics.get("assets", []))
     
     return {
@@ -182,13 +182,17 @@ def get_macro_calendar():
 # --- Settings ---
 
 @app.get("/api/settings")
-def get_settings():
-    key = os.getenv("GEMINI_API_KEY") or ""
+def get_settings(user=Depends(get_current_user)):
+    key = database.get_user_gemini_key(user["id"]) or os.getenv("GEMINI_API_KEY") or ""
     return {"gemini_api_key": key[:5] + "..." if key else "", "has_key": bool(key)}
 
 @app.post("/api/settings")
 def save_settings(settings: SettingsUpdate, user=Depends(get_current_user)):
-    return {"status": "success"}
+    try:
+        database.save_user_gemini_key(user["id"], settings.gemini_api_key.strip())
+        return {"status": "success", "message": "Gemini API anahtarı kaydedildi."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host=config.HOST, port=config.PORT, reload=True)

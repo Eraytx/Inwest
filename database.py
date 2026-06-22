@@ -105,6 +105,26 @@ def init_db():
     )
     """)
 
+    # 6. User settings (per-user API keys)
+    cursor.execute(f"""
+    CREATE TABLE IF NOT EXISTS user_settings (
+        user_id INTEGER PRIMARY KEY,
+        gemini_api_key TEXT
+    )
+    """)
+
+    # Migration: add asset_class to transactions if missing
+    try:
+        cursor.execute("SELECT asset_class FROM transactions LIMIT 1")
+    except Exception:
+        if DATABASE_URL:
+            conn.rollback()
+        try:
+            cursor.execute("ALTER TABLE transactions ADD COLUMN asset_class TEXT")
+        except Exception:
+            if DATABASE_URL:
+                conn.rollback()
+
     conn.commit()
     conn.close()
     print("Database schema is up to date.")
@@ -146,30 +166,67 @@ def get_user_by_token(token):
 
 # --- Data Functions ---
 
-def add_transaction(user_id, symbol, asset_class, tx_type, amount, price, timestamp=None):
-    if timestamp is None: timestamp = datetime.now().isoformat()
-    conn = get_connection(); cursor = get_cursor(conn)
+def add_transaction(user_id, symbol, asset_class, tx_type, amount, price, timestamp=None, skip_tx_insert=False):
+    if timestamp is None:
+        timestamp = datetime.now().isoformat()
+    conn = get_connection()
+    cursor = get_cursor(conn)
     ph = "%s" if DATABASE_URL else "?"
     try:
-        cursor.execute(f"INSERT INTO transactions (user_id, symbol, type, amount, price, timestamp) VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph})", (user_id, symbol.upper(), tx_type.upper(), amount, price, timestamp))
-        cursor.execute(f"SELECT amount, avg_price FROM assets WHERE user_id = {ph} AND symbol = {ph}", (user_id, symbol.upper()))
-        asset = cursor.fetchone()
-        if tx_type.upper() == "BUY":
-            if asset:
-                new_amount = asset["amount"] + amount
-                new_avg = ((asset["amount"] * asset["avg_price"]) + (amount * price)) / new_amount if new_amount > 0 else 0.0
-                cursor.execute(f"UPDATE assets SET amount = {ph}, avg_price = {ph} WHERE user_id = {ph} AND symbol = {ph}", (new_amount, new_avg, user_id, symbol.upper()))
-            else:
-                cursor.execute(f"INSERT INTO assets (user_id, symbol, asset_class, amount, avg_price) VALUES ({ph}, {ph}, {ph}, {ph}, {ph})", (user_id, symbol.upper(), asset_class, amount, price))
-        elif tx_type.upper() == "SELL":
-            if asset:
-                new_amount = max(0.0, asset["amount"] - amount)
-                if new_amount <= 1e-8: cursor.execute(f"DELETE FROM assets WHERE user_id = {ph} AND symbol = {ph}", (user_id, symbol.upper()))
-                else: cursor.execute(f"UPDATE assets SET amount = {ph} WHERE user_id = {ph} AND symbol = {ph}", (new_amount, user_id, symbol.upper()))
+        if not skip_tx_insert:
+            cursor.execute(
+                f"INSERT INTO transactions (user_id, symbol, asset_class, type, amount, price, timestamp) VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})",
+                (user_id, symbol.upper(), asset_class, tx_type.upper(), amount, price, timestamp),
+            )
+        _apply_transaction(cursor, user_id, symbol.upper(), asset_class, tx_type.upper(), amount, price, ph)
         conn.commit()
         return True
-    except Exception as e: conn.rollback(); raise e
-    finally: conn.close()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
+
+def _infer_asset_class(symbol, asset_class=None):
+    if asset_class:
+        return asset_class
+    if symbol.endswith(".IS"):
+        return "BIST"
+    if symbol in ("XAUUSD=X", "GC=F"):
+        return "Gold"
+    if symbol in ("XAGUSD=X", "SI=F"):
+        return "Silver"
+    if "-" in symbol:
+        return "Crypto"
+    return "US_Stocks"
+
+
+def _apply_transaction(cursor, user_id, symbol, asset_class, tx_type, amount, price, ph):
+    cursor.execute(f"SELECT amount, avg_price FROM assets WHERE user_id = {ph} AND symbol = {ph}", (user_id, symbol))
+    asset = cursor.fetchone()
+    if tx_type == "BUY":
+        if asset:
+            new_amount = asset["amount"] + amount
+            new_avg = ((asset["amount"] * asset["avg_price"]) + (amount * price)) / new_amount if new_amount > 0 else 0.0
+            cursor.execute(
+                f"UPDATE assets SET amount = {ph}, avg_price = {ph} WHERE user_id = {ph} AND symbol = {ph}",
+                (new_amount, new_avg, user_id, symbol),
+            )
+        else:
+            cursor.execute(
+                f"INSERT INTO assets (user_id, symbol, asset_class, amount, avg_price) VALUES ({ph}, {ph}, {ph}, {ph}, {ph})",
+                (user_id, symbol, asset_class, amount, price),
+            )
+    elif tx_type == "SELL" and asset:
+        new_amount = max(0.0, asset["amount"] - amount)
+        if new_amount <= 1e-8:
+            cursor.execute(f"DELETE FROM assets WHERE user_id = {ph} AND symbol = {ph}", (user_id, symbol))
+        else:
+            cursor.execute(
+                f"UPDATE assets SET amount = {ph} WHERE user_id = {ph} AND symbol = {ph}",
+                (new_amount, user_id, symbol),
+            )
 
 def get_assets(user_id):
     conn = get_connection(); cursor = get_cursor(conn)
@@ -226,7 +283,8 @@ def delete_transaction(user_id, tx_id):
     recalculate_assets(user_id)
 
 def recalculate_assets(user_id):
-    conn = get_connection(); cursor = get_cursor(conn)
+    conn = get_connection()
+    cursor = get_cursor(conn)
     ph = "%s" if DATABASE_URL else "?"
     try:
         cursor.execute(f"DELETE FROM assets WHERE user_id = {ph}", (user_id,))
@@ -234,10 +292,46 @@ def recalculate_assets(user_id):
         txs = cursor.fetchall()
         for tx in txs:
             symbol = tx["symbol"].upper()
-            if symbol.endswith(".IS"): ac = "BIST"
-            elif "-" in symbol: ac = "Crypto"
-            else: ac = "US_Stocks"
-            add_transaction(user_id, symbol, ac, tx["type"], tx["amount"], tx["price"], tx["timestamp"])
+            ac = tx.get("asset_class") or _infer_asset_class(symbol)
+            _apply_transaction(cursor, user_id, symbol, ac, tx["type"].upper(), tx["amount"], tx["price"], ph)
         conn.commit()
-    except Exception as e: conn.rollback(); raise e
-    finally: conn.close()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
+
+def get_user_gemini_key(user_id):
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    ph = "%s" if DATABASE_URL else "?"
+    try:
+        cursor.execute(f"SELECT gemini_api_key FROM user_settings WHERE user_id = {ph}", (user_id,))
+        row = cursor.fetchone()
+        return row["gemini_api_key"] if row and row["gemini_api_key"] else None
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+def save_user_gemini_key(user_id, api_key):
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    ph = "%s" if DATABASE_URL else "?"
+    try:
+        if DATABASE_URL:
+            cursor.execute(
+                f"INSERT INTO user_settings (user_id, gemini_api_key) VALUES ({ph}, {ph}) "
+                f"ON CONFLICT (user_id) DO UPDATE SET gemini_api_key = EXCLUDED.gemini_api_key",
+                (user_id, api_key),
+            )
+        else:
+            cursor.execute(f"INSERT OR REPLACE INTO user_settings (user_id, gemini_api_key) VALUES ({ph}, {ph})", (user_id, api_key))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
