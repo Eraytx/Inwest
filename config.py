@@ -5,14 +5,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # API Keys
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Default API key provided by the developer
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDPGIB1v9SSHGoYw5VT26ZEO8deG7XLVYA")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 # Database Configuration
-# Store the database inside the project directory
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATABASE_URL = os.getenv("DATABASE_URL") # For PostgreSQL (e.g., Supabase)
-DATABASE_PATH = os.getenv("DATABASE_PATH", os.path.join(BASE_DIR, "portfolio.db")) # For SQLite fallback
+DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_PATH = os.getenv("DATABASE_PATH", os.path.join(BASE_DIR, "portfolio.db"))
 
 # Server Configuration
 HOST = os.getenv("HOST", "0.0.0.0")
