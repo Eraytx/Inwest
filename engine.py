@@ -10,84 +10,58 @@ def get_usd_try_rate():
     for sym in ["USDTRY=X", "TRY=X"]:
         try:
             ticker = yf.Ticker(sym)
-            # Try fast_info first (most recent)
-            if hasattr(ticker, 'fast_info') and 'last_price' in ticker.fast_info:
-                return float(ticker.fast_info['last_price'])
-            # Fallback to history
             history = ticker.history(period="1d")
             if not history.empty:
                 return float(history["Close"].iloc[-1])
         except Exception as e:
             print(f"Error fetching USD/TRY rate from {sym}: {e}")
-    return 34.50 # Hard fallback
+    return 34.50 # Fallback
 
 def get_asset_price(symbol, asset_class, usd_rate):
     """
     Fetches the current price for a symbol.
-    Returns: (price, currency)
+    Returns: (price, currency, display_name)
     """
     symbol = symbol.upper().strip()
     ac = asset_class.upper()
+
+    display_name = symbol
+    if ac == "GOLD" or symbol == "XAUUSD=X":
+        display_name = "Gram Altın"
+    elif ac == "SILVER" or symbol == "XAGUSD=X":
+        display_name = "Gram Gümüş"
+    elif symbol.endswith(".IS"):
+        display_name = symbol.replace(".IS", "")
+    elif symbol.endswith("-USD"):
+        display_name = symbol.replace("-USD", "")
 
     try:
         # Special handling for Gold/Silver Gram calculation (TRY)
         if ac in ["GOLD", "SILVER"] or symbol in ["XAUUSD=X", "XAGUSD=X"]:
             target_symbol = symbol if "=" in symbol else ("XAUUSD=X" if ac == "GOLD" else "XAGUSD=X")
-
-            # Try to get the Ounce price in USD
             ticker = yf.Ticker(target_symbol)
-            ounce_price_usd = None
-
-            if hasattr(ticker, 'fast_info') and 'last_price' in ticker.fast_info:
-                ounce_price_usd = float(ticker.fast_info['last_price'])
-
-            if ounce_price_usd is None:
-                history = ticker.history(period="5d")
-                if not history.empty:
-                    ounce_price_usd = float(history["Close"].iloc[-1])
-
-            if ounce_price_usd:
-                # Convert Ounce USD -> Gram TRY
-                gram_price_try = (ounce_price_usd * usd_rate) / OUNCE_TO_GRAM
-                print(f"Calculated Gram price for {target_symbol}: {gram_price_try} TL")
-                return gram_price_try, "TRY"
-
-        # Standard Assets (BIST, Crypto, US Stocks)
-        ticker = yf.Ticker(symbol)
-        current_price = None
-
-        if hasattr(ticker, 'fast_info') and 'last_price' in ticker.fast_info:
-            current_price = float(ticker.fast_info['last_price'])
-
-        if current_price is None:
             history = ticker.history(period="5d")
             if not history.empty:
-                current_price = float(history["Close"].iloc[-1])
+                ounce_price_usd = float(history["Close"].iloc[-1])
+                # Convert Ounce USD -> Gram TRY
+                gram_price_try = (ounce_price_usd * usd_rate) / OUNCE_TO_GRAM
+                return gram_price_try, "TRY", display_name
 
-        if current_price:
-            # Resolve currency
+        # Standard Assets
+        ticker = yf.Ticker(symbol)
+        history = ticker.history(period="5d")
+        if not history.empty:
+            price = float(history["Close"].iloc[-1])
             if ac == "BIST" or symbol.endswith(".IS"):
                 currency = "TRY"
             else:
                 currency = "USD"
-            return current_price, currency
+            return price, currency, display_name
 
     except Exception as e:
         print(f"Error fetching price for {symbol}: {e}")
 
-    return None, None
-
-def _display_name(symbol, asset_class):
-    ac = asset_class.upper()
-    if ac == "GOLD" or symbol == "XAUUSD=X":
-        return "Gram Altın"
-    if ac == "SILVER" or symbol == "XAGUSD=X":
-        return "Gram Gümüş"
-    if symbol.endswith(".IS"):
-        return symbol.replace(".IS", "")
-    if symbol.endswith("-USD"):
-        return symbol.replace("-USD", "")
-    return symbol
+    return None, None, display_name
 
 def calculate_portfolio(user_id):
     assets = database.get_assets(user_id)
@@ -102,20 +76,20 @@ def calculate_portfolio(user_id):
         amount = asset["amount"]
         avg_price = asset["avg_price"]
 
-        current_price, currency = get_asset_price(symbol, asset_class, usd_try)
+        current_price, currency, display_name = get_asset_price(symbol, asset_class, usd_try)
 
         if current_price is None:
             current_price = avg_price
-            # Default currency resolution if fetch fails
             ac = asset_class.upper()
             currency = "TRY" if (ac in ["BIST", "GOLD", "SILVER"] or symbol.endswith(".IS")) else "USD"
 
         # Cost and Value calculations
         if currency == "TRY":
+            # Gold/Silver Gram assets are entered in Gram/TL price
             cost_try = amount * avg_price
             value_try = amount * current_price
         else:
-            # USD Assets
+            # USD Assets (US Stocks, Crypto)
             cost_try = (amount * avg_price) * usd_try
             value_try = (amount * current_price) * usd_try
 
@@ -127,7 +101,7 @@ def calculate_portfolio(user_id):
 
         asset_details.append({
             "symbol": symbol,
-            "display_name": _display_name(symbol, asset_class),
+            "display_name": display_name,
             "asset_class": asset_class,
             "amount": amount,
             "avg_price": avg_price,
@@ -155,6 +129,7 @@ def calculate_portfolio(user_id):
     today_str = date.today().isoformat()
     database.save_portfolio_history(user_id, today_str, total_value_try, total_cost_try, daily_change_percent)
 
+    # Calculate allocation percentages
     for detail in asset_details:
         detail["allocation_percent"] = (
             (detail["value_try"] / total_value_try * 100.0) if total_value_try > 0 else 0.0
